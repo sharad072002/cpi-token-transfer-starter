@@ -117,7 +117,38 @@ pub mod cpi_token_transfer {
         Ok(())
     }
 
-    /// PDA-signed transfer from vault
+    /// Deposit tokens into a vault
+    /// User transfers tokens to a PDA-owned vault account
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+        // Validate source has sufficient balance
+        require!(
+            ctx.accounts.from.amount >= amount,
+            CpiError::InsufficientBalance
+        );
+
+        // Validate mints match
+        require!(
+            ctx.accounts.from.mint == ctx.accounts.vault.mint,
+            CpiError::InvalidMint
+        );
+
+        // Build CPI context for token transfer to vault
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.from.to_account_info(),
+            to: ctx.accounts.vault.to_account_info(),
+            authority: ctx.accounts.user.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+
+        // Execute CPI transfer
+        token::transfer(cpi_ctx, amount)?;
+
+        msg!("Deposited {} tokens to vault", amount);
+        Ok(())
+    }
+
+    /// PDA-signed transfer from vault (withdraw)
     /// Vault is a PDA-owned token account, sign CPI with PDA seeds
     pub fn vault_transfer(
         ctx: Context<VaultTransfer>,
@@ -222,6 +253,38 @@ pub struct TransferWithFee<'info> {
     /// Protocol fee collection account
     #[account(mut)]
     pub protocol_fee_account: Account<'info, TokenAccount>,
+
+    /// Token Program for CPI - explicitly validate program ID
+    #[account(address = anchor_spl::token::ID @ CpiError::InvalidProgram)]
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct Deposit<'info> {
+    /// User depositing tokens
+    pub user: Signer<'info>,
+
+    /// Source token account (must be owned by user)
+    #[account(
+        mut,
+        constraint = from.owner == user.key() @ CpiError::Unauthorized
+    )]
+    pub from: Account<'info, TokenAccount>,
+
+    /// Vault authority PDA
+    /// CHECK: This is a PDA used only for vault ownership, validated by seeds
+    #[account(
+        seeds = [VAULT_AUTHORITY_SEED, user.key().as_ref()],
+        bump
+    )]
+    pub vault_authority: AccountInfo<'info>,
+
+    /// Vault token account owned by the vault authority PDA
+    #[account(
+        mut,
+        constraint = vault.owner == vault_authority.key() @ CpiError::Unauthorized
+    )]
+    pub vault: Account<'info, TokenAccount>,
 
     /// Token Program for CPI - explicitly validate program ID
     #[account(address = anchor_spl::token::ID @ CpiError::InvalidProgram)]

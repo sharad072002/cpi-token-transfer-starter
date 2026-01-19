@@ -243,6 +243,71 @@ describe("cpi-token-transfer", () => {
     expect(Number(destBalance.amount)).to.equal(transferAmount);
   });
 
+  it("Deposits tokens into vault", async () => {
+    // Derive vault authority PDA
+    const [vaultAuthority] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vault_authority"), payer.publicKey.toBuffer()],
+      program.programId
+    );
+
+    // Create a new mint for this test
+    const depositMint = await createMint(
+      connection,
+      payer,
+      payer.publicKey,
+      null,
+      9
+    );
+
+    // Create user token account
+    const userAccount = await createAccount(
+      connection,
+      payer,
+      depositMint,
+      payer.publicKey
+    );
+
+    // Create vault token account owned by the PDA
+    const vaultTokenAccountInfo = await getOrCreateAssociatedTokenAccount(
+      connection,
+      payer,
+      depositMint,
+      vaultAuthority,
+      true // allowOwnerOffCurve - required for PDA owners
+    );
+    const vaultTokenAccount = vaultTokenAccountInfo.address;
+
+    // Mint tokens to user
+    const userAmount = 10_000_000_000; // 10 tokens
+    await mintTo(connection, payer, depositMint, userAccount, payer, userAmount);
+
+    // Verify initial balances
+    let userBalance = await getAccount(connection, userAccount);
+    let vaultBalance = await getAccount(connection, vaultTokenAccount);
+    expect(Number(userBalance.amount)).to.equal(userAmount);
+    expect(Number(vaultBalance.amount)).to.equal(0);
+
+    // Deposit tokens into vault
+    const depositAmount = 3_000_000_000; // 3 tokens
+    await program.methods
+      .deposit(new anchor.BN(depositAmount))
+      .accounts({
+        user: payer.publicKey,
+        from: userAccount,
+        vaultAuthority: vaultAuthority,
+        vault: vaultTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    // Verify balances after deposit
+    userBalance = await getAccount(connection, userAccount);
+    vaultBalance = await getAccount(connection, vaultTokenAccount);
+
+    expect(Number(userBalance.amount)).to.equal(userAmount - depositAmount);
+    expect(Number(vaultBalance.amount)).to.equal(depositAmount);
+  });
+
   it("Validates token program in CPI", async () => {
     // This test verifies the token program constraint works
     // by checking that the constraint is properly defined
